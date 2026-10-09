@@ -20,6 +20,7 @@ class GenerationConfig:
     no_repeat_ngram_size: int | None = None
     do_sample: bool = False
     seed: int = 42
+    use_kv_cache: bool = True
 
     def __post_init__(self) -> None:
         if (
@@ -65,6 +66,8 @@ class GenerationConfig:
             raise ValueError("no_repeat_ngram_size must be greater than one when supplied.")
         if not isinstance(self.seed, int) or isinstance(self.seed, bool) or self.seed < 0:
             raise ValueError("seed must be a non-negative integer.")
+        if not isinstance(self.use_kv_cache, bool):
+            raise ValueError("use_kv_cache must be a boolean.")
 
 
 @dataclass(frozen=True)
@@ -88,6 +91,33 @@ class GenerationBatchResult:
     """Per-row generation results for a possibly padded input batch."""
 
     sequences: tuple[GeneratedSequence, ...]
+
+
+def compile_generation_model(model: nn.Module) -> nn.Module:
+    """Compile the model forward used by cached autoregressive decoding."""
+
+    compiler = getattr(torch, "compile", None)
+    if compiler is None:
+        raise RuntimeError("This PyTorch build does not provide torch.compile.")
+    try:
+        return compiler(model, mode="default", dynamic=True)
+    except Exception as error:
+        raise RuntimeError(
+            "torch.compile could not initialize its CUDA backend. "
+            "The environment needs a working Triton toolchain and Python "
+            "development headers (Python.h)."
+        ) from error
+
+
+def _mark_compiled_step(model: nn.Module) -> None:
+    """Tell CUDA Graphs that a compiled decode invocation is independent."""
+
+    if not hasattr(model, "_orig_mod"):
+        return
+    compiler = getattr(torch, "compiler", None)
+    marker = None if compiler is None else getattr(compiler, "cudagraph_mark_step_begin", None)
+    if marker is not None:
+        marker()
 
 
 def apply_repetition_penalty(
@@ -288,6 +318,14 @@ def generate_sequences(
     results: list[GeneratedSequence] = []
     try:
         model.eval()
+        original_model = getattr(model, "_orig_mod", None)
+        cache_enabled = bool(
+            config.use_kv_cache
+            and (
+                getattr(model, "supports_kv_cache", False)
+                or getattr(original_model, "supports_kv_cache", False)
+            )
+        )
         for row_index in range(input_ids.shape[0]):
             prompt = input_ids[row_index][attention_mask[row_index]].to(device)
             generated = prompt.unsqueeze(0)
@@ -298,8 +336,18 @@ def generate_sequences(
             available = context_length - generated.shape[1]
             limit = min(config.max_new_tokens, available)
             matched_stop: tuple[int, ...] | None = None
+            past_key_values = None
+            next_input = generated
             for _ in range(limit):
-                logits, _loss = model(generated)
+                if cache_enabled:
+                    _mark_compiled_step(model)
+                    logits, _loss, past_key_values = model(
+                        next_input,
+                        past_key_values=past_key_values,
+                        use_cache=True,
+                    )
+                else:
+                    logits, _loss = model(generated)
                 next_logits = logits[:, -1, :].float()
                 next_logits = apply_repetition_penalty(
                     next_logits,
@@ -338,6 +386,7 @@ def generate_sequences(
                 token_id = int(next_token.item())
                 generated_ids.append(token_id)
                 generated = torch.cat((generated, next_token), dim=1)
+                next_input = next_token
                 for stop in normalized_stops:
                     if len(generated_ids) >= len(stop) and tuple(
                         generated_ids[-len(stop) :]

@@ -16,6 +16,9 @@ _INTEGER_DTYPES = {
     torch.int64,
 }
 
+LayerKeyValue = tuple[torch.Tensor, torch.Tensor]
+KeyValueCache = tuple[LayerKeyValue, ...]
+
 
 @dataclass
 class ModelConfig:
@@ -29,6 +32,8 @@ class ModelConfig:
     intermediate_size: int = 1024
     dropout: float = 0.0
     tie_embeddings: bool = True
+    position_embedding_type: str = "learned"
+    rope_theta: float = 10000.0
 
     def __post_init__(self) -> None:
         integer_dimensions = {
@@ -59,6 +64,18 @@ class ModelConfig:
             raise ValueError(
                 f"dropout must be between 0.0 and 1.0; got {self.dropout!r}."
             )
+
+        if self.position_embedding_type not in {"learned", "rotary"}:
+            raise ValueError(
+                "position_embedding_type must be 'learned' or 'rotary'; "
+                f"got {self.position_embedding_type!r}."
+            )
+        if self.position_embedding_type == "rotary" and (
+            self.hidden_size // self.num_heads
+        ) % 2:
+            raise ValueError("Rotary attention requires an even head dimension.")
+        if not isinstance(self.rope_theta, (int, float)) or self.rope_theta <= 0:
+            raise ValueError(f"rope_theta must be positive; got {self.rope_theta!r}.")
 
 
 class RMSNorm(nn.Module):
@@ -93,6 +110,8 @@ class CausalSelfAttention(nn.Module):
         self.num_heads = config.num_heads
         self.head_dimension = config.hidden_size // config.num_heads
         self.dropout = float(config.dropout)
+        self.position_embedding_type = config.position_embedding_type
+        self.rope_theta = float(config.rope_theta)
 
         self.qkv_projection = nn.Linear(
             config.hidden_size,
@@ -109,7 +128,10 @@ class CausalSelfAttention(nn.Module):
         self,
         inputs: torch.Tensor,
         attention_mask: torch.Tensor | None = None,
-    ) -> torch.Tensor:
+        position_ids: torch.Tensor | None = None,
+        past_key_value: LayerKeyValue | None = None,
+        use_cache: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, LayerKeyValue]:
         if inputs.ndim != 3:
             raise ValueError(
                 "attention input must have shape [batch, sequence, hidden_size]; "
@@ -136,7 +158,54 @@ class CausalSelfAttention(nn.Module):
         key = split_heads(key)
         value = split_heads(value)
 
-        if attention_mask is None:
+        if self.position_embedding_type == "rotary":
+            if position_ids is None or position_ids.shape != (batch_size, sequence_length):
+                raise ValueError("Rotary attention requires position_ids matching inputs.")
+            half = self.head_dimension // 2
+            frequencies = torch.arange(
+                0, half, device=inputs.device, dtype=torch.float32
+            )
+            frequencies = self.rope_theta ** (-frequencies / half)
+            angles = position_ids.to(dtype=torch.float32)[..., None] * frequencies
+            cosines = angles.cos()[:, None, :, :].to(dtype=query.dtype)
+            sines = angles.sin()[:, None, :, :].to(dtype=query.dtype)
+
+            def rotate(tensor: torch.Tensor) -> torch.Tensor:
+                first, second = tensor[..., :half], tensor[..., half : 2 * half]
+                rotated = torch.cat(
+                    (first * cosines - second * sines, first * sines + second * cosines),
+                    dim=-1,
+                )
+                if tensor.shape[-1] > 2 * half:
+                    rotated = torch.cat((rotated, tensor[..., 2 * half :]), dim=-1)
+                return rotated
+
+            query = rotate(query)
+            key = rotate(key)
+
+        past_length = 0
+        if past_key_value is not None:
+            past_key, past_value = past_key_value
+            expected_shape = (
+                batch_size,
+                self.num_heads,
+                self.head_dimension,
+            )
+            if past_key.ndim != 4 or past_value.ndim != 4:
+                raise ValueError("Cached keys and values must be four-dimensional.")
+            if past_key.shape[:2] != expected_shape[:2] or past_value.shape[:2] != expected_shape[:2]:
+                raise ValueError("Cached keys and values have incompatible batch or head dimensions.")
+            if past_key.shape[-1] != self.head_dimension or past_value.shape[-1] != self.head_dimension:
+                raise ValueError("Cached keys and values have an incompatible head dimension.")
+            if past_key.shape[2] != past_value.shape[2]:
+                raise ValueError("Cached keys and values must have the same sequence length.")
+            past_length = past_key.shape[2]
+            key = torch.cat((past_key.to(dtype=key.dtype), key), dim=2)
+            value = torch.cat((past_value.to(dtype=value.dtype), value), dim=2)
+
+        present_key_value = (key, value)
+
+        if attention_mask is None and past_length == 0:
             attention_output = F.scaled_dot_product_attention(
                 query,
                 key,
@@ -145,18 +214,28 @@ class CausalSelfAttention(nn.Module):
                 is_causal=True,
             )
         else:
-            if attention_mask.shape != (batch_size, sequence_length):
+            if attention_mask is not None and attention_mask.shape != (batch_size, sequence_length):
                 raise ValueError(
                     "attention_mask must match [batch, sequence]."
                 )
             causal = torch.ones(
-                (sequence_length, sequence_length),
+                (sequence_length, past_length + sequence_length),
                 dtype=torch.bool,
                 device=inputs.device,
-            ).tril()
-            allowed = causal[None, None, :, :] & attention_mask[
-                :, None, None, :
-            ].to(dtype=torch.bool)
+            )
+            causal = torch.tril(causal, diagonal=past_length)
+            allowed = causal[None, None, :, :]
+            if attention_mask is not None:
+                if past_length:
+                    past_mask = torch.ones(
+                        (batch_size, past_length),
+                        dtype=torch.bool,
+                        device=inputs.device,
+                    )
+                    key_mask = torch.cat((past_mask, attention_mask), dim=1)
+                else:
+                    key_mask = attention_mask
+                allowed = allowed & key_mask[:, None, None, :]
             attention_output = F.scaled_dot_product_attention(
                 query,
                 key,
@@ -170,7 +249,10 @@ class CausalSelfAttention(nn.Module):
             sequence_length,
             self.hidden_size,
         )
-        return self.output_projection(attention_output)
+        output = self.output_projection(attention_output)
+        if use_cache:
+            return output, present_key_value
+        return output
 
 
 class FeedForward(nn.Module):
@@ -213,16 +295,32 @@ class TransformerBlock(nn.Module):
         self,
         inputs: torch.Tensor,
         attention_mask: torch.Tensor | None = None,
-    ) -> torch.Tensor:
-        hidden_states = inputs + self.attention(
+        position_ids: torch.Tensor | None = None,
+        past_key_value: LayerKeyValue | None = None,
+        use_cache: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, LayerKeyValue]:
+        attention_result = self.attention(
             self.attention_norm(inputs),
             attention_mask,
+            position_ids,
+            past_key_value,
+            use_cache,
         )
-        return hidden_states + self.feed_forward(self.ffn_norm(hidden_states))
+        if use_cache:
+            attention_output, present_key_value = attention_result
+        else:
+            attention_output = attention_result
+        hidden_states = inputs + attention_output
+        output = hidden_states + self.feed_forward(self.ffn_norm(hidden_states))
+        if use_cache:
+            return output, present_key_value
+        return output
 
 
 class LanguageModel(nn.Module):
     """Decoder-only causal language model."""
+
+    supports_kv_cache = True
 
     def __init__(self, config: ModelConfig) -> None:
         super().__init__()
@@ -232,9 +330,10 @@ class LanguageModel(nn.Module):
             config.vocab_size,
             config.hidden_size,
         )
-        self.position_embeddings = nn.Embedding(
-            config.context_length,
-            config.hidden_size,
+        self.position_embeddings = (
+            nn.Embedding(config.context_length, config.hidden_size)
+            if config.position_embedding_type == "learned"
+            else None
         )
         self.blocks = nn.ModuleList(
             TransformerBlock(config) for _ in range(config.num_layers)
@@ -324,7 +423,12 @@ class LanguageModel(nn.Module):
         labels: torch.Tensor | None = None,
         attention_mask: torch.Tensor | None = None,
         position_ids: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        past_key_values: KeyValueCache | None = None,
+        use_cache: bool = False,
+    ) -> (
+        tuple[torch.Tensor, torch.Tensor | None]
+        | tuple[torch.Tensor, torch.Tensor | None, KeyValueCache]
+    ):
         if input_ids.ndim != 2:
             raise ValueError(
                 "input_ids must have shape [batch, sequence]; "
@@ -336,13 +440,23 @@ class LanguageModel(nn.Module):
                 f"got {input_ids.dtype}."
             )
 
-        _, sequence_length = input_ids.shape
-        if sequence_length > self.config.context_length:
+        batch_size, sequence_length = input_ids.shape
+        past_length = 0
+        if past_key_values is not None:
+            if len(past_key_values) != self.config.num_layers:
+                raise ValueError("past_key_values must contain one entry per layer.")
+            if past_key_values:
+                past_length = past_key_values[0][0].shape[2]
+            if any(cache[0].shape[2] != past_length for cache in past_key_values):
+                raise ValueError("All cached layers must have the same sequence length.")
+        if past_length + sequence_length > self.config.context_length:
             raise ValueError(
                 "input sequence length exceeds context_length; "
-                f"got {sequence_length} and maximum "
+                f"got {past_length + sequence_length} and maximum "
                 f"{self.config.context_length}."
             )
+        if past_key_values is not None and not use_cache:
+            raise ValueError("past_key_values requires use_cache=True.")
 
         if labels is not None:
             if labels.shape != input_ids.shape:
@@ -364,10 +478,13 @@ class LanguageModel(nn.Module):
         if position_ids is None:
             if attention_mask is None:
                 positions = torch.arange(
-                    sequence_length,
+                    past_length,
+                    past_length + sequence_length,
                     device=input_ids.device,
                     dtype=torch.long,
                 )
+                if self.config.position_embedding_type == "rotary":
+                    positions = positions.unsqueeze(0).expand(batch_size, -1)
             else:
                 positions = attention_mask.long().cumsum(dim=-1) - 1
                 positions.clamp_(min=0)
@@ -378,18 +495,39 @@ class LanguageModel(nn.Module):
         if int(positions.max().item()) >= self.config.context_length:
             raise ValueError("position_ids exceed context_length.")
         hidden_states = self.token_embeddings(input_ids.to(dtype=torch.long))
-        hidden_states = hidden_states + self.position_embeddings(positions)
+        if self.position_embeddings is not None:
+            hidden_states = hidden_states + self.position_embeddings(positions)
 
-        for block in self.blocks:
+        present_key_values: list[LayerKeyValue] = []
+        for layer_index, block in enumerate(self.blocks):
+            past_key_value = (
+                None if past_key_values is None else past_key_values[layer_index]
+            )
             if self.gradient_checkpointing and self.training:
+                if use_cache:
+                    raise ValueError(
+                        "use_cache=True is incompatible with gradient checkpointing."
+                    )
                 hidden_states = checkpoint(
                     block,
                     hidden_states,
                     attention_mask,
+                    positions,
                     use_reentrant=False,
                 )
             else:
-                hidden_states = block(hidden_states, attention_mask)
+                block_result = block(
+                    hidden_states,
+                    attention_mask,
+                    positions,
+                    past_key_value,
+                    use_cache,
+                )
+                if use_cache:
+                    hidden_states, present_key_value = block_result
+                    present_key_values.append(present_key_value)
+                else:
+                    hidden_states = block_result
 
         logits = self.lm_head(self.final_norm(hidden_states))
         loss: torch.Tensor | None = None
@@ -400,6 +538,8 @@ class LanguageModel(nn.Module):
                 ignore_index=-100,
             )
 
+        if use_cache:
+            return logits, loss, tuple(present_key_values)
         return logits, loss
 
 

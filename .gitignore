@@ -1,4 +1,5 @@
 .venv/
+.venv-specialist/
 __pycache__/
 *.py[cod]
 *.egg-info/
@@ -17,4 +18,12 @@ backups/*
 !data/tokenized/.gitkeep
 !releases/.gitkeep
 !backups/.gitkeep
+exports/*
+!exports/.gitkeep
+.codex/
 .DS_Store
+CLAUDE.md
+
+data/memory/
+
+AGENTS.md

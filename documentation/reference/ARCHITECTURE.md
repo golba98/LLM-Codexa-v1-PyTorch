@@ -1,6 +1,6 @@
 # Codexa v1 Base Architecture
 
-The active configuration is `configs/1b.yaml`.
+The active configuration is `configs/models/1b.yaml`.
 
 | Layers | Hidden | Heads | SwiGLU width | Context | Vocabulary | Parameters |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: |

@@ -9,7 +9,7 @@ from src.preflight import (
     estimate_checkpoint_storage,
     independent_filesystems,
 )
-from scripts.preflight_full_run import _backup_checks
+from scripts.training.preflight_full_run import _backup_checks
 
 
 def main() -> None:

@@ -8,7 +8,7 @@ import subprocess
 import sys
 from tempfile import TemporaryDirectory
 
-from scripts.prepare_dataset import prepare_dataset
+from scripts.data.prepare_dataset import prepare_dataset
 from src.data.io import read_documents
 from src.data.statistics import DatasetStatistics
 
@@ -219,7 +219,7 @@ def test_sample_cli() -> DatasetStatistics:
         output_dir = Path(directory) / "prepared"
         command = [
             sys.executable,
-            "scripts/prepare_dataset.py",
+            "scripts/data/prepare_dataset.py",
             str(SAMPLE_PATH),
             "--output-dir",
             str(output_dir),

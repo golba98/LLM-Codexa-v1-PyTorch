@@ -8,13 +8,17 @@ import subprocess
 import sys
 from tempfile import TemporaryDirectory
 
-from scripts.prepare_dataset import prepare_dataset
+from scripts.data.prepare_dataset import prepare_dataset
 from src.tokenizer import (
+    ASSISTANT_TOKEN,
     BOS_TOKEN,
+    END_TOKEN,
     EOS_TOKEN,
     PAD_TOKEN,
     SPECIAL_TOKENS,
+    SYSTEM_TOKEN,
     UNK_TOKEN,
+    USER_TOKEN,
     finalize_streaming_tokenizer,
     inspect_tokenizer,
     inspect_tokenizer_streaming,
@@ -191,6 +195,10 @@ def test_training_and_round_trip() -> tuple[int, float, str]:
             BOS_TOKEN: 1,
             EOS_TOKEN: 2,
             UNK_TOKEN: 3,
+            SYSTEM_TOKEN: 4,
+            USER_TOKEN: 5,
+            ASSISTANT_TOKEN: 6,
+            END_TOKEN: 7,
         }
         assert manifest["tokenizer_sha256"] == first_checksum
 
@@ -216,7 +224,7 @@ def test_validation_errors() -> None:
                 output_dir=temporary_dir / "tokenizer",
                 vocab_size=259,
             ),
-            "vocab_size must be an integer of at least 260",
+            "vocab_size must be an integer of at least 264",
         )
         assert_raises(
             ValueError,
@@ -248,7 +256,7 @@ def test_cli_tools() -> None:
 
         train_command = [
             sys.executable,
-            "scripts/train_tokenizer.py",
+            "scripts/tokenizer/train_tokenizer.py",
             str(train_path),
             str(validation_path),
             "--output-dir",
@@ -291,7 +299,7 @@ def test_cli_tools() -> None:
 
         inspect_command = [
             sys.executable,
-            "scripts/inspect_tokenizer.py",
+            "scripts/tokenizer/inspect_tokenizer.py",
             str(tokenizer_dir / "tokenizer.json"),
             str(train_path),
             str(validation_path),

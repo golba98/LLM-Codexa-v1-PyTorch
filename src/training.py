@@ -68,6 +68,8 @@ class TrainingMetrics:
     total_tokens_seen: int
     tokens_per_second: float
     step_time_seconds: float
+    forward_backward_seconds: float
+    optimizer_update_seconds: float
     gradient_norm: float
     allocated_vram_bytes: int | None
     reserved_vram_bytes: int | None
@@ -491,6 +493,7 @@ def train_model(
     ) = None,
     max_micro_steps: int | None = None,
     progress: bool = False,
+    deadline_monotonic: float | None = None,
 ) -> tuple[TrainingState, list[TrainingMetrics]]:
     """Train until exactly ``max_steps`` optimizer updates are complete."""
 
@@ -547,6 +550,8 @@ def train_model(
         else None
     )
     while run_state.optimizer_step < max_steps:
+        if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
+            break
         if (
             max_micro_steps is not None
             and attempted_micro_steps + gradient_accumulation_steps
@@ -562,6 +567,11 @@ def train_model(
         start_micro_step = run_state.micro_step
 
         for _ in range(gradient_accumulation_steps):
+            if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
+                optimizer.zero_grad(set_to_none=True)
+                run_state.micro_step = start_micro_step
+                run_state.tokens_seen -= step_tokens
+                raise TimeoutError("Training deadline reached during accumulation.")
             input_ids, labels = cycling.next()
             non_blocking = device.type == "cuda" and bool(
                 getattr(train_loader, "pin_memory", False)
@@ -588,6 +598,11 @@ def train_model(
             run_state.micro_step += 1
             run_state.tokens_seen += token_count
             attempted_micro_steps += 1
+
+        if device.type == "cuda":
+            torch.cuda.synchronize(device)
+        forward_backward_seconds = time.perf_counter() - start_time
+        optimizer_start = time.perf_counter()
 
         run_state.completed_epochs = cycling.completed_epochs
         run_state.batches_in_epoch = cycling.batches_in_epoch
@@ -622,6 +637,7 @@ def train_model(
 
         if device.type == "cuda":
             torch.cuda.synchronize(device)
+        optimizer_update_seconds = time.perf_counter() - optimizer_start
         elapsed = time.perf_counter() - start_time
         if elapsed <= 0:
             raise RuntimeError("Measured optimizer-step duration was not positive.")
@@ -663,6 +679,8 @@ def train_model(
             total_tokens_seen=run_state.tokens_seen,
             tokens_per_second=step_tokens / elapsed,
             step_time_seconds=elapsed,
+            forward_backward_seconds=forward_backward_seconds,
+            optimizer_update_seconds=optimizer_update_seconds,
             gradient_norm=gradient_norm,
             allocated_vram_bytes=allocated,
             reserved_vram_bytes=reserved,

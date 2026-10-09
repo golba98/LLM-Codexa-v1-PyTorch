@@ -19,6 +19,9 @@ class TextQualityMetrics:
     repeated_ngram_rate: float
     malformed_character_count: int
     longest_repeated_run: int
+    longest_repeated_span: int
+    distinct_2: float
+    distinct_3: float
 
     def to_dict(self) -> dict[str, int | float]:
         return asdict(self)
@@ -59,6 +62,35 @@ def repeated_ngram_rate(words: list[str], ngram_size: int = 4) -> float:
         for index in range(count)
     ]
     return 1.0 - (len(set(ngrams)) / len(ngrams))
+
+
+def distinct_ngram_ratio(words: list[str], ngram_size: int) -> float:
+    """Return unique n-grams divided by all observed n-grams."""
+
+    count = len(words) - ngram_size + 1
+    if count <= 0:
+        return 0.0
+    values = {
+        tuple(words[index : index + ngram_size]) for index in range(count)
+    }
+    return len(values) / count
+
+
+def longest_repeated_span(words: list[str]) -> int:
+    """Return the longest repeated non-overlapping word span."""
+
+    longest = 0
+    for left in range(len(words)):
+        for right in range(left + 1, len(words)):
+            length = 0
+            while (
+                right + length < len(words)
+                and left + length < right
+                and words[left + length] == words[right + length]
+            ):
+                length += 1
+            longest = max(longest, length)
+    return longest
 
 
 def ngram_overlap_rate(
@@ -121,4 +153,7 @@ def analyze_generated_text(
         repeated_ngram_rate=repeated_ngram_rate(words, ngram_size),
         malformed_character_count=malformed_count,
         longest_repeated_run=longest_run,
+        longest_repeated_span=longest_repeated_span(words),
+        distinct_2=distinct_ngram_ratio(words, 2),
+        distinct_3=distinct_ngram_ratio(words, 3),
     )

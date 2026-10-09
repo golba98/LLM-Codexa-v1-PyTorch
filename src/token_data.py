@@ -26,6 +26,26 @@ TRAIN_INDEX_FILENAME = "train_index.json"
 VALIDATION_INDEX_FILENAME = "validation_index.json"
 
 
+def production_packing_policy() -> dict[str, object]:
+    """Return the versioned initial document-packing contract."""
+
+    return {
+        "version": "1.0",
+        "documents_may_share_sequence": True,
+        "eos_tokens_between_documents": 1,
+        "predict_first_token_after_eos": True,
+        "attention_crosses_document_boundaries": True,
+        "position_ids_reset_at_document_boundaries": False,
+        "trailing_partial_sequence": "discard",
+        "padding": "none",
+        "padding_token_id": 0,
+        "padding_label_id": -100,
+        "loss_exclusions": "none_without_padding",
+        "boundary_metadata": "split_index_json",
+        "same_policy_for_train_and_validation": True,
+    }
+
+
 @dataclass(frozen=True)
 class TokenDataBuildResult:
     """Files and counts produced by token dataset creation."""
@@ -415,6 +435,7 @@ def build_token_data(
             "eos_token_id": eos_token_id,
             "dtype": dtype.name,
             "context_length": context_length,
+            "packing_policy": production_packing_policy(),
             "input_paths": {
                 "train": _manifest_path_value(train_input, destination),
                 "validation": _manifest_path_value(
@@ -490,6 +511,8 @@ class MemmapTokenDataset(Dataset[tuple[torch.Tensor, torch.Tensor]]):
         context_length: int,
         stride: int | None = None,
         model_vocab_size: int | None = None,
+        token_offset: int = 0,
+        token_count: int | None = None,
     ) -> None:
         self.token_file = Path(token_file)
         self.dtype = np.dtype(dtype)
@@ -506,7 +529,17 @@ class MemmapTokenDataset(Dataset[tuple[torch.Tensor, torch.Tensor]]):
                 f"Token file size {file_size} is not divisible by "
                 f"dtype item size {self.dtype.itemsize}."
             )
-        token_count = file_size // self.dtype.itemsize
+        file_token_count = file_size // self.dtype.itemsize
+        if token_offset < 0:
+            raise ValueError("token_offset must be non-negative.")
+        if token_count is None:
+            token_count = file_token_count - token_offset
+        if token_count <= 0:
+            raise ValueError("token_count must be positive.")
+        if token_offset + token_count > file_token_count:
+            raise ValueError("Requested token range exceeds the token file.")
+        self.token_offset = token_offset
+        self.token_count = token_count
         self.example_count, self.trailing_token_count = count_packed_examples(
             token_count,
             context_length=context_length,
@@ -522,6 +555,7 @@ class MemmapTokenDataset(Dataset[tuple[torch.Tensor, torch.Tensor]]):
             self.token_file,
             mode="r",
             dtype=self.dtype,
+            offset=token_offset * self.dtype.itemsize,
             shape=(token_count,),
         )
         if model_vocab_size is not None:

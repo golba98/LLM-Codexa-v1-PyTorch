@@ -21,8 +21,21 @@ PAD_TOKEN = "<pad>"
 BOS_TOKEN = "<bos>"
 EOS_TOKEN = "<eos>"
 UNK_TOKEN = "<unk>"
-SPECIAL_TOKENS = (PAD_TOKEN, BOS_TOKEN, EOS_TOKEN, UNK_TOKEN)
-TOKENIZER_FORMAT_VERSION = "1.0"
+SYSTEM_TOKEN = "<|system|>"
+USER_TOKEN = "<|user|>"
+ASSISTANT_TOKEN = "<|assistant|>"
+END_TOKEN = "<|end|>"
+SPECIAL_TOKENS = (
+    PAD_TOKEN,
+    BOS_TOKEN,
+    EOS_TOKEN,
+    UNK_TOKEN,
+    SYSTEM_TOKEN,
+    USER_TOKEN,
+    ASSISTANT_TOKEN,
+    END_TOKEN,
+)
+TOKENIZER_FORMAT_VERSION = "2.0"
 
 
 @dataclass(frozen=True)

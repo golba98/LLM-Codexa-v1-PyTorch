@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import tempfile
 
-from scripts.monitor_gpu import monitor_gpu
+from scripts.monitoring.monitor_gpu import monitor_gpu
 from src.hardware_monitor import parse_nvidia_smi_row, summarize_gpu_metrics
 
 

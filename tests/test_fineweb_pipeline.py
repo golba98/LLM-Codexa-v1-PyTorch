@@ -7,8 +7,8 @@ import tempfile
 import pyarrow as arrow
 import pyarrow.parquet as parquet
 
-from scripts.estimate_parquet_tokens import estimate_shard
-from scripts.prepare_fineweb_edu import prepare_fineweb_edu
+from scripts.data.estimate_parquet_tokens import estimate_shard
+from scripts.data.prepare_fineweb_edu import prepare_fineweb_edu
 from src.tokenizer import train_tokenizer
 
 

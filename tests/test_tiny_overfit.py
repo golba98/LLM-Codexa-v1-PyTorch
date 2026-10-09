@@ -6,14 +6,14 @@ import tempfile
 
 import torch
 
-from scripts.run_tiny_overfit import _single_example
+from scripts.training.run_tiny_overfit import _single_example
 from src.config import load_config
 from src.model import LanguageModel, count_parameters
 from src.tokenizer import train_tokenizer
 
 
 def main() -> None:
-    config = load_config("configs/tiny_overfit.yaml")
+    config = load_config("configs/testing/tiny_overfit.yaml")
     with torch.device("meta"):
         model = LanguageModel(config.model)
     parameter_count = count_parameters(model)

@@ -12,6 +12,7 @@ from pathlib import Path
 import random
 import shutil
 import tempfile
+import time
 import numpy as np
 import torch
 from torch import nn
@@ -48,6 +49,7 @@ class LoadedCheckpoint:
     run_id: str
     tokenizer_reference: str | None
     tokenizer_sha256: str | None
+    resume_context: dict[str, object] | None
 
 
 @dataclass(frozen=True)
@@ -262,6 +264,7 @@ def build_checkpoint_payload(
     run_id: str,
     tokenizer_reference: str | None,
     tokenizer_sha256: str | None,
+    resume_context: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """Build a complete checkpoint payload at an optimizer boundary."""
 
@@ -284,6 +287,9 @@ def build_checkpoint_payload(
         "run_id": run_id,
         "tokenizer_reference": tokenizer_reference,
         "tokenizer_sha256": tokenizer_sha256,
+        "resume_context": (
+            None if resume_context is None else dict(resume_context)
+        ),
     }
 
 
@@ -306,12 +312,34 @@ class CheckpointManager:
         is_best: bool = False,
         milestone: bool = False,
     ) -> Path:
+        started = time.perf_counter()
         state = _validate_training_state(payload.get("training_state"))
         if self.latest_path.exists():
             verify_checkpoint_checksum(self.latest_path)
             _copy_checkpoint(self.latest_path, self.previous_path)
         _atomic_torch_save(dict(payload), self.latest_path)
         _write_checksum(self.latest_path)
+        checksum = verify_checkpoint_checksum(self.latest_path)
+        duration = time.perf_counter() - started
+        completion_path = self.latest_path.with_suffix(
+            self.latest_path.suffix + ".complete.json"
+        )
+        _atomic_text_write(
+            json.dumps(
+                {
+                    "complete": True,
+                    "checkpoint": self.latest_path.name,
+                    "sha256": checksum,
+                    "bytes": self.latest_path.stat().st_size,
+                    "optimizer_step": state.optimizer_step,
+                    "write_duration_seconds": duration,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            completion_path,
+        )
         if is_best:
             _copy_checkpoint(self.latest_path, self.best_path)
         if milestone:
@@ -330,6 +358,7 @@ def load_checkpoint(
     optimizer: Optimizer,
     scaler: torch.amp.GradScaler | None,
     expected_config: ProjectConfig | None = None,
+    expected_data_manifest_sha256: str | None = None,
     restore_rng: bool = True,
     map_location: str | torch.device = "cpu",
 ) -> LoadedCheckpoint:
@@ -397,6 +426,7 @@ def load_checkpoint(
         raise ValueError("Checkpoint run identity is invalid.")
     tokenizer_reference = payload.get("tokenizer_reference")
     tokenizer_sha256 = payload.get("tokenizer_sha256")
+    resume_context = payload.get("resume_context")
     if tokenizer_reference is not None and not isinstance(
         tokenizer_reference,
         str,
@@ -404,6 +434,15 @@ def load_checkpoint(
         raise ValueError("Checkpoint tokenizer reference is invalid.")
     if tokenizer_sha256 is not None and not isinstance(tokenizer_sha256, str):
         raise ValueError("Checkpoint tokenizer checksum is invalid.")
+    if resume_context is not None and not isinstance(resume_context, dict):
+        raise ValueError("Checkpoint resume context is invalid.")
+    if expected_data_manifest_sha256 is not None:
+        if resume_context is None or resume_context.get(
+            "data_manifest_sha256"
+        ) != expected_data_manifest_sha256:
+            raise ValueError(
+                "Checkpoint data-manifest checksum does not match this run."
+            )
     if scaler is not None and not isinstance(scaler_state, dict):
         raise ValueError("Checkpoint GradScaler state is invalid.")
 
@@ -421,6 +460,7 @@ def load_checkpoint(
         run_id=run_id,
         tokenizer_reference=tokenizer_reference,
         tokenizer_sha256=tokenizer_sha256,
+        resume_context=resume_context,
     )
 
 

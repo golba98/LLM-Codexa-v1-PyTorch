@@ -5,7 +5,7 @@ from pathlib import Path
 import tempfile
 from types import SimpleNamespace
 
-from scripts.compare_evaluations import run
+from scripts.evaluation.compare_evaluations import run
 
 
 def _report(path: Path, *, step: int, loss: float, repetition: float) -> None:

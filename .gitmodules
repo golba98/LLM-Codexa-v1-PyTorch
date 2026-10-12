@@ -1,0 +1,32 @@
+[submodule "LLM-Architecture"]
+	path = components/LLM-Architecture
+	url = https://github.com/golba98/LLM-Architecture-PyTorch-Codexa-v1.git
+	branch = main
+[submodule "LLM-Data"]
+	path = components/LLM-Data
+	url = https://github.com/golba98/LLM-Data-PyTorch-Codexa-v1.git
+	branch = main
+[submodule "LLM-From-Scratch"]
+	path = components/LLM-From-Scratch
+	url = https://github.com/golba98/LLM-From-Scratch-PyTorch-Codexa-v1.git
+	branch = main
+[submodule "LLM-Inference"]
+	path = components/LLM-Inference
+	url = https://github.com/golba98/LLM-Inference-PyTorch-Codexa-v1.git
+	branch = main
+[submodule "LLM-Memory"]
+	path = components/LLM-Memory
+	url = https://github.com/golba98/LLM-Memory-PyTorch-Codexa-v1.git
+	branch = main
+[submodule "LLM-Specialist"]
+	path = components/LLM-Specialist
+	url = https://github.com/golba98/LLM-Specialist-PyTorch-Codexa-v1.git
+	branch = main
+[submodule "LLM-Tokenizer"]
+	path = components/LLM-Tokenizer
+	url = https://github.com/golba98/LLM-Tokenizer-PyTorch-Codexa-v1.git
+	branch = main
+[submodule "LLM-Training"]
+	path = components/LLM-Training
+	url = https://github.com/golba98/LLM-Training-PyTorch-Codexa-v1.git
+	branch = main

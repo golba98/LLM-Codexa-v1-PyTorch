@@ -1,3 +1,10 @@
+> **Historical record.** This repository is no longer pending retirement: it is
+> now the public Codexa showcase and links the component repositories as
+> submodules (see the [README](../../README.md) and
+> [component catalog](../COMPONENTS.md)). The original notice is preserved
+> unchanged below; its relative link points to the former local development
+> workspace and does not resolve on GitHub.
+
 # Retirement pending review
 
 The canonical PyTorch workspace is
